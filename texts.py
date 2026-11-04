@@ -11,8 +11,8 @@ from typing import Final
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
-from .config import OWNER, Deps
-from .db import MARKED, Database, StaffList, Status
+from config import OWNER, Deps
+from db import MARKED, Database, StaffList, Status
 
 
 # ========== Тексты ==========

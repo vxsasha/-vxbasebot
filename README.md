@@ -2,15 +2,15 @@
 
 ```
 main.py          запуск
-bot/             код бота и баннеры (менять ничего не нужно)
+app.py, config.py, db.py, texts.py, handlers.py   код бота
+*.jpg            баннеры карточек (можно положить в папку assets/)
 requirements.txt зависимости
 railway.json     команда запуска для Railway
-.python-version  версия Python для Railway
 ```
 
 ## Запуск на Railway
 
-1. **GitHub.** Загрузите все файлы в приватный репозиторий (Add file → Upload files, вместе с папкой `bot`).
+1. **GitHub.** Загрузите все файлы в приватный репозиторий (Add file → Upload files).
 2. **Railway.** New Project → Deploy from GitHub repo.
    Если репозитория нет в списке: Configure GitHub App → Repository access → выберите репозиторий → Save.
 3. **Variables** (вкладка сервиса):

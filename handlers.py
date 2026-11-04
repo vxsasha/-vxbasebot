@@ -22,9 +22,9 @@ from telegram.constants import ChatType, ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
-from . import texts
-from .config import ASSETS_DIR, CAPTURES_DIR, Deps, get_deps
-from .db import StaffList, Status
+import texts
+from config import ASSETS_DIR, CAPTURES_DIR, Deps, get_deps
+from db import StaffList, Status
 
 log = logging.getLogger(__name__)
 

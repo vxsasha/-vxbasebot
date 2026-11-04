@@ -14,9 +14,10 @@ from telegram.ext import (
     filters,
 )
 
-from . import handlers, texts
-from .config import ConfigError, Deps, Settings, from_bot_data, load_settings
-from .db import Database, StaffList
+import handlers
+import texts
+from config import ConfigError, Deps, Settings, from_bot_data, load_settings
+from db import Database, StaffList
 
 log = logging.getLogger("bot")
 

@@ -10,13 +10,14 @@ from typing import Final
 from dotenv import load_dotenv
 from telegram.ext import ContextTypes
 
-from .db import Database, Status
+from db import Database, Status
 
 
 # ========== Настройки ==========
 
-ROOT_DIR = Path(__file__).resolve().parent.parent  # папка с main.py
-ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+ROOT_DIR = Path(__file__).resolve().parent  # папка с main.py
+# Баннеры лежат в assets/ или прямо рядом с main.py (так получается при загрузке файлов через сайт GitHub)
+ASSETS_DIR = ROOT_DIR / "assets" if (ROOT_DIR / "assets").is_dir() else ROOT_DIR
 CAPTURES_DIR = ROOT_DIR / "captures"
 DB_FILENAME = "base.db"
 
