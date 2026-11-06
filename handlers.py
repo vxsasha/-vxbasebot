@@ -24,7 +24,7 @@ from telegram.ext import ContextTypes
 
 import texts
 from config import ASSETS_DIR, CAPTURES_DIR, Deps, get_deps
-from db import StaffList, Status
+from db import StaffList, Status, is_pending
 
 log = logging.getLogger(__name__)
 
@@ -42,8 +42,8 @@ PUBLIC_COMMANDS = (
     BotCommand("help", "Все команды"),
 )
 ADMIN_COMMANDS = (
-    BotCommand("add", "Занести скамера: ID причина пруф"),
-    BotCommand("add_r", "Занести подозрительного: ID причина пруф"),
+    BotCommand("add", "Занести скамера: юз/ID причина пруф"),
+    BotCommand("add_r", "Занести подозрительного: юз/ID причина пруф"),
 )
 OWNER_COMMANDS = (
     BotCommand("hire_admin", "Сделать администратором: ID"),
@@ -81,6 +81,8 @@ async def _apply(bot: Bot, scope: BotCommandScope, commands: tuple[BotCommand, .
 
 async def refresh_user(bot: Bot, deps: Deps, user_id: int) -> None:
     """Меню человека в личке с ботом и во всех группах, где оно уже выставлено."""
+    if is_pending(user_id):
+        return
     commands = commands_for(deps, user_id)
     await _apply(bot, BotCommandScopeChat(user_id), commands)
     for chat_id in deps.db.group_menu_chats(user_id):
@@ -142,9 +144,33 @@ def resolve_target(deps: Deps, update: Update, arg: str | None) -> int | None:
     return None
 
 
+async def fill_profile(bot: Bot, deps: Deps, user_id: int) -> None:
+    """Если у человека в базе нет юза или имени, пробуем узнать их у Telegram по ID.
+
+    Telegram отдаёт данные только о тех, кого бот уже видел; если не вышло - просто оставляем как есть.
+    Найденный юз заодно переносит на этот ID запись, занесённую раньше только по юзу.
+    """
+    if is_pending(user_id):
+        return
+    row = deps.db.get(user_id)
+    if row is not None and row["username"] and row["full_name"]:
+        return
+    try:
+        chat = await bot.get_chat(user_id)
+    except TelegramError:
+        return
+    if chat.type == ChatType.PRIVATE and (chat.username or chat.full_name):
+        deps.db.touch(user_id, chat.username, chat.full_name)
+
+
 async def send_card(message: Message, deps: Deps, user_id: int) -> None:
     """Карточка проверки: баннер роли, подпись и кнопка "Вечная ссылка"."""
     card = texts.check_card(deps, user_id)
+    if is_pending(user_id):
+        # Настоящий ID неизвестен - кнопка ведёт на t.me/юз
+        sent = await _send_banner(message, deps, card, texts.username_link(deps.db.get(user_id)["username"]))
+        deps.banner_ids[card.role] = sent.photo[-1].file_id
+        return
     try:
         sent = await _send_banner(message, deps, card, texts.permanent_link(user_id))
     except BadRequest as exc:
@@ -198,15 +224,16 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _check(update, get_deps(context), context.args[0] if context.args else None)
+    await _check(update, context, context.args[0] if context.args else None)
 
 
 async def check_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if match := CHECK_TEXT_RE.match(update.effective_message.text or ""):
-        await _check(update, get_deps(context), match.group(1))
+        await _check(update, context, match.group(1))
 
 
-async def _check(update: Update, deps: Deps, arg: str | None) -> None:
+async def _check(update: Update, context: ContextTypes.DEFAULT_TYPE, arg: str | None) -> None:
+    deps = get_deps(context)
     message = update.effective_message
     try:
         user_id = resolve_target(deps, update, arg)
@@ -216,6 +243,7 @@ async def _check(update: Update, deps: Deps, arg: str | None) -> None:
     if user_id is None:
         await reply_html(message, texts.CHECK_USAGE)
         return
+    await fill_profile(context.bot, deps, user_id)
     await send_card(message, deps, user_id)
 
 
@@ -284,14 +312,17 @@ async def _report(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: Stat
         await reply_html(message, texts.report_usage(command))
         return
 
+    # /add ID @юз причина пруф - сразу привязать юз, чтобы человека находил чек по @юзу
+    username = None
+    if len(args) >= 4 and args[0].isdigit() and args[1].startswith("@"):
+        username = args.pop(1)
+
     try:
         target = resolve_target(deps, update, args[0])
-    except TargetError as exc:
-        await reply_html(message, str(exc))
-        return
-    if target is None:
-        await reply_html(message, texts.report_usage(command))
-        return
+    except UnknownUsername as exc:
+        # Бот не знает ID этого юза - заносим по юзу; когда человек появится, запись перейдёт на его ID
+        target = deps.db.add_pending(exc.username)
+    await fill_profile(context.bot, deps, target)
 
     if deps.is_owner(target):
         await reply_html(message, "⛔️ Нельзя занести владельца в базу.")
@@ -307,6 +338,9 @@ async def _report(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: Stat
         await reply_html(message, "⛔️ Администраторов и гарантов может занести только владелец.")
         return
 
+    if username:
+        deps.db.link_username(target, username)
+
     reason = " ".join(args[1:-1])
     proof = args[-1] if args[-1].lower().startswith("http") else f"https://{args[-1]}"
     status = deps.db.add_report(target, kind, reason, proof, author)
@@ -319,7 +353,7 @@ async def _report(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: Stat
     total = len(deps.db.reports(target))
     await reply_html(
         message,
-        f"✅ {texts.name_link(deps.db.get(target), target)} (<code>{target}</code>) в базе: {label}. "
+        f"✅ {texts.name_link(deps.db.get(target), target)} ({texts.id_text(target)}) в базе: {label}. "
         f"Записей: {total}.",
     )
 
@@ -348,6 +382,7 @@ async def _owner_target(update: Update, context: ContextTypes.DEFAULT_TYPE, usag
     if deps.is_owner(target):
         await reply_html(message, "⛔️ Роль владельца менять нельзя.")
         return None
+    await fill_profile(context.bot, deps, target)
     return target
 
 
