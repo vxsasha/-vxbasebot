@@ -27,6 +27,11 @@ class StaffList(StrEnum):
 
 MARKED = (Status.SCAMMER, Status.SUSPECT)
 
+
+def is_pending(user_id: int) -> bool:
+    """Запись занесена по @юзу, настоящий ID пока неизвестен."""
+    return user_id < 0
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     user_id    INTEGER PRIMARY KEY,
@@ -83,11 +88,7 @@ class Database:
         """Запоминает юз и имя, чтобы потом находить человека по @юзу."""
         with self._conn:
             if username:
-                # Юз мог перейти к другому человеку - у прежнего владельца стираем
-                self._conn.execute(
-                    "UPDATE users SET username = NULL WHERE username = ? COLLATE NOCASE AND user_id != ?",
-                    (username, user_id),
-                )
+                self._claim_username(user_id, username)
             self._conn.execute(
                 """
                 INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)
@@ -95,6 +96,59 @@ class Database:
                 """,
                 (user_id, username, full_name),
             )
+
+    def link_username(self, user_id: int, username: str) -> None:
+        """Привязывает @юз к ID (например, /add ID @юз ...), если бот сам ещё не видел этого человека."""
+        username = username.lstrip("@")
+        with self._conn:
+            self._claim_username(user_id, username)
+            self._ensure(user_id)
+            self._conn.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
+
+    def _claim_username(self, user_id: int, username: str) -> None:
+        """Юз теперь у user_id: запись "только по юзу" переносится на этот ID, у прежнего владельца юз стирается."""
+        pending = self._conn.execute(
+            "SELECT * FROM users WHERE user_id < 0 AND username = ? COLLATE NOCASE", (username,)
+        ).fetchone()
+        if pending is not None:
+            self._merge_pending(pending, user_id)
+        self._conn.execute(
+            "UPDATE users SET username = NULL WHERE username = ? COLLATE NOCASE AND user_id != ?",
+            (username, user_id),
+        )
+
+    def _merge_pending(self, pending: sqlite3.Row, user_id: int) -> None:
+        self._ensure(user_id)
+        moved = self._conn.execute(
+            "UPDATE reports SET user_id = ? WHERE user_id = ?", (user_id, pending["user_id"])
+        ).rowcount
+        if moved:
+            has_scam = self._conn.execute(
+                "SELECT 1 FROM reports WHERE user_id = ? AND kind = ?", (user_id, Status.SCAMMER)
+            ).fetchone()
+            self._conn.execute(
+                """
+                UPDATE users SET status = ?, added_by = ?, added_at = ?, in_admins = 0, in_garants = 0, channel = NULL
+                WHERE user_id = ?
+                """,
+                (
+                    Status.SCAMMER if has_scam else Status.SUSPECT,
+                    pending["added_by"],
+                    pending["added_at"],
+                    user_id,
+                ),
+            )
+        self._conn.execute("DELETE FROM users WHERE user_id = ?", (pending["user_id"],))
+
+    def add_pending(self, username: str) -> int:
+        """Запись для @юза, ID которого бот не знает. Её ID отрицательный (у Telegram таких нет);
+        когда человек напишет боту или в чат с ботом, запись перенесётся на его настоящий ID."""
+        username = username.lstrip("@")
+        with self._conn:
+            lowest = self._conn.execute("SELECT MIN(user_id) FROM users").fetchone()[0] or 0
+            pending_id = min(lowest, 0) - 1
+            self._conn.execute("INSERT INTO users (user_id, username) VALUES (?, ?)", (pending_id, username))
+        return pending_id
 
     def get(self, user_id: int) -> sqlite3.Row | None:
         return self._conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
