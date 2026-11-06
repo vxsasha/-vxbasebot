@@ -12,7 +12,7 @@ from typing import Final
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from config import OWNER, Deps
-from db import MARKED, Database, StaffList, Status
+from db import MARKED, Database, StaffList, Status, is_pending
 
 
 # ========== Тексты ==========
@@ -62,12 +62,19 @@ def name_link(row: sqlite3.Row | None, user_id: int) -> str:
     name = None
     if row is not None:
         name = row["full_name"] or (f"@{row['username']}" if row["username"] else None)
+    if is_pending(user_id) and row is not None and row["username"]:
+        # ID неизвестен - ссылка по юзу
+        return f'<a href="https://t.me/{esc(row["username"])}">{esc(name)}</a>'
     return f'<a href="tg://user?id={user_id}">{esc(name or user_id)}</a>'
+
+
+def id_text(user_id: int) -> str:
+    return "ID неизвестен" if is_pending(user_id) else f"<code>{user_id}</code>"
 
 
 def user_line(row: sqlite3.Row) -> str:
     username = f" — @{esc(row['username'])}" if row["username"] else ""
-    return f"{name_link(row, row['user_id'])}{username} (<code>{row['user_id']}</code>)"
+    return f"{name_link(row, row['user_id'])}{username} ({id_text(row['user_id'])})"
 
 
 # ---------- карточка проверки ----------
@@ -84,14 +91,15 @@ def check_card(deps: Deps, user_id: int) -> Card:
     role = deps.role_of(user_id)
 
     name = name_link(row, user_id)
-    if row is not None and row["username"]:
+    if row is not None and row["username"] and not is_pending(user_id):
         name += f" (@{esc(row['username'])})"
+    shown_id = "неизвестен" if is_pending(user_id) else f"<code>{user_id}</code>"
 
     head = [
         "<b>Проверяем пользователя…</b>",
         "",
         f"<b>{Emoji.NAME}Имя:</b> {name}",
-        f"<b>{Emoji.ID}Айди:</b> <code>{user_id}</code>",
+        f"<b>{Emoji.ID}Айди:</b> {shown_id}",
         "",
         f"{Emoji.ROLE}<b>Роль: {ROLE_NAMES[role]}</b>",
     ]
@@ -174,8 +182,9 @@ _HELP_PUBLIC = (
 )
 _HELP_ADMIN = (
     "<b>Для администраторов</b>\n"
-    "/add [ID] [причина] [ссылка на пруф] - занести скамера (повторно - ещё одна запись)\n"
-    "/add_r [ID] [причина] [ссылка на пруф] - занести подозрительного"
+    "/add [юз/ID] [причина] [ссылка на пруф] - занести скамера (повторно - ещё одна запись)\n"
+    "/add_r [юз/ID] [причина] [ссылка на пруф] - занести подозрительного\n"
+    "Можно сразу ID и юз: /add [ID] [@юз] [причина] [пруф]"
 )
 _HELP_OWNER = (
     "<b>Для владельца</b>\n"
@@ -253,8 +262,9 @@ ADMIN_ONLY = "⛔️ Команда только для владельца и а
 
 def report_usage(command: str) -> str:
     return (
-        f"Формат: <code>{command} [ID] [точная причина] [ссылка на сообщение с пруфом]</code>\n"
-        f"Пример: <code>{command} 123456789 Скам на 500 робуксов https://t.me/vxbaseroblox/15</code>"
+        f"Формат: <code>{command} [юз/ID] [точная причина] [ссылка на сообщение с пруфом]</code>\n"
+        f"Пример: <code>{command} @username Скам на 500 робуксов https://t.me/vxbaseroblox/15</code>\n"
+        f"Можно ID и юз сразу: <code>{command} 123456789 @username причина ссылка</code>"
     )
 
 
